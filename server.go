@@ -82,9 +82,11 @@ type MessageGetFile struct {
 }
 
 func (s *FileServer) Get(key string) (io.Reader, error) {
-	if s.store.Has(s.ID, key) {
+	hashedKey := hashKey(key)
+
+	if s.store.Has(s.ID, hashedKey) {
 		fmt.Printf("[%s] serving file (%s) from local disk\n", s.Transport.Addr(), key)
-		_, r, err := s.store.Read(s.ID, key)
+		_, r, err := s.store.Read(s.ID, hashedKey)
 		return r, err
 	}
 
@@ -93,7 +95,7 @@ func (s *FileServer) Get(key string) (io.Reader, error) {
 	msg := Message{
 		Payload: MessageGetFile{
 			ID:  s.ID,
-			Key: hashKey(key),
+			Key: hashedKey,
 		},
 	}
 
@@ -101,15 +103,14 @@ func (s *FileServer) Get(key string) (io.Reader, error) {
 		return nil, err
 	}
 
-	time.Sleep(time.Millisecond * 500)
+	// Better to wait for incoming data via some signaling or timeout, for now just sleep
+	time.Sleep(time.Second * 5)
 
 	for _, peer := range s.peers {
-		// First read the file size so we can limit the amount of bytes that we read
-		// from the connection, so it will not keep hanging.
 		var fileSize int64
 		binary.Read(peer, binary.LittleEndian, &fileSize)
 
-		n, err := s.store.WriteDecrypt(s.EncKey, s.ID, key, io.LimitReader(peer, fileSize))
+		n, err := s.store.WriteDecrypt(s.EncKey, s.ID, hashedKey, io.LimitReader(peer, fileSize))
 		if err != nil {
 			return nil, err
 		}
@@ -119,48 +120,52 @@ func (s *FileServer) Get(key string) (io.Reader, error) {
 		peer.CloseStream()
 	}
 
-	_, r, err := s.store.Read(s.ID, key)
+	_, r, err := s.store.Read(s.ID, hashedKey)
 	return r, err
 }
 
 func (s *FileServer) Store(key string, r io.Reader) error {
+	hashedKey := hashKey(key)
 	var (
 		fileBuffer = new(bytes.Buffer)
 		tee        = io.TeeReader(r, fileBuffer)
 	)
 
-	size, err := s.store.Write(s.ID, key, tee)
+	size, err := s.store.Write(s.ID, hashedKey, tee)
 	if err != nil {
 		return err
 	}
 
-	msg := Message{
-		Payload: MessageStoreFile{
-			ID:   s.ID,
-			Key:  hashKey(key),
-			Size: size + 16,
-		},
+	msg := MessageStoreFile{
+		ID:   s.ID,
+		Key:  hashedKey,
+		Size: size + 16,
 	}
 
-	if err := s.broadcast(&msg); err != nil {
-		return err
-	}
-
-	time.Sleep(time.Millisecond * 5)
-
-	peers := []io.Writer{}
 	for _, peer := range s.peers {
-		peers = append(peers, peer)
-	}
-	mw := io.MultiWriter(peers...)
-	mw.Write([]byte{p2p.IncomingStream})
-	n, err := copyEncrypt(s.EncKey, fileBuffer, mw)
-	if err != nil {
-		return err
+		// Encode the message
+		buf := new(bytes.Buffer)
+		if err := gob.NewEncoder(buf).Encode(Message{Payload: msg}); err != nil {
+			return err
+		}
+
+		// Send the IncomingMessage byte and message
+		if err := peer.Send([]byte{p2p.IncomingMessage}); err != nil {
+			return err
+		}
+		if err := peer.Send(buf.Bytes()); err != nil {
+			return err
+		}
+
+		// Now send the actual file stream
+		peer.Send([]byte{p2p.IncomingStream}) // mark beginning of stream
+		_, err := copyEncrypt(s.EncKey, bytes.NewReader(fileBuffer.Bytes()), peer)
+		if err != nil {
+			return err
+		}
 	}
 
-	fmt.Printf("[%s] received and written (%d) bytes to disk\n", s.Transport.Addr(), n)
-
+	fmt.Printf("[%s] stored file (%s) and shared with peers\n", s.Transport.Addr(), key)
 	return nil
 }
 
@@ -255,6 +260,7 @@ func (s *FileServer) handleMessageStoreFile(from string, msg MessageStoreFile) e
 		return fmt.Errorf("peer (%s) could not be found in the peer list", from)
 	}
 
+	// Expect the stream to come right after
 	n, err := s.store.Write(msg.ID, msg.Key, io.LimitReader(peer, msg.Size))
 	if err != nil {
 		return err
