@@ -9,6 +9,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/vanhung1999dev/distribute-cas/p2p"
 )
 
 type FileServerOpts struct {
