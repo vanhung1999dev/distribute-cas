@@ -58,16 +58,6 @@ This will start 3 nodes:
 ## 🧪 Example Output
 
 ```bash
-[[:3000] starting fileserver...
-2025/08/05 19:19:58 TCP transport listening on port: :3000
-[:7777] starting fileserver...
-2025/08/05 19:19:58 TCP transport listening on port: :7777
-[:5000] starting fileserver...
-[:5000] stored file (picture_0.png) and shared with peers
-2025/08/05 19:20:02 deleted [d44bbd0bbda685d5db90f419568b531ab9afa97b] from disk
-[:5000] dont have file (picture_0.png) locally, fetching from network...
-2025/08/05 19:20:07 file (picture_0.png) could not be fetched from network
-make: *** [run] Error 1
 ➜ distribute-cas (main) ✗ make run 
 [:3000] starting fileserver...
 2025/08/05 19:25:37 TCP transport listening on port: :3000
